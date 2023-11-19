@@ -2,7 +2,7 @@
 #include <fstream>
 #include <cstring>
 #include <openssl/md5.h>
-#include <future>
+#include <thread>
 #include <vector>
 
 // Function to calculate MD5 hash
@@ -36,6 +36,17 @@ std::vector<std::string> generate_variants(const std::string& input_data) {
     return variants;
 }
 
+// Function to process a range of variants
+void process_variants(const std::vector<std::string>& variants, size_t start, size_t end, const std::string& target_hash) {
+    for (size_t i = start; i < end; ++i) {
+        std::string hashed_value = calculate_md5(variants[i].c_str(), variants[i].size());
+        if (hashed_value == target_hash) {
+            std::cout << "Collision found! Original hash: " << target_hash << "\n";
+            std::exit(0);  // Exit the entire program when a collision is found
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " <file_path> <target_hash>\n";
@@ -60,21 +71,31 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::vector<std::future<std::string>> futures;
-
+    // Generate variants
     auto variants = generate_variants(file_data.data());
-    for (const auto& variant : variants) {
-        futures.push_back(std::async(std::launch::async, calculate_md5, variant.c_str(), variant.size()));
+
+    // Number of threads to use
+    const size_t num_threads = std::thread::hardware_concurrency();
+    
+    // Calculate variants per thread
+    const size_t variants_per_thread = variants.size() / num_threads;
+
+    // Vector to store thread objects
+    std::vector<std::thread> threads;
+
+    // Launch threads
+    for (size_t i = 0; i < num_threads; ++i) {
+        size_t start = i * variants_per_thread;
+        size_t end = (i == num_threads - 1) ? variants.size() : (i + 1) * variants_per_thread;
+        threads.emplace_back(process_variants, std::ref(variants), start, end, std::cref(target_hash));
     }
 
-    for (size_t i = 0; i < variants.size(); ++i) {
-        std::string hashed_value = futures[i].get();
-        if (hashed_value == target_hash) {
-            std::cout << "Collision found! Original hash: " << target_hash << "\n";
-            return 0;
-        }
+    // Join threads
+    for (auto& thread : threads) {
+        thread.join();
     }
 
     std::cout << "No collision found.\n";
     return 0;
 }
+
