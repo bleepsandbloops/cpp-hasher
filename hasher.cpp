@@ -4,6 +4,9 @@
 #include <openssl/md5.h>
 #include <thread>
 #include <vector>
+#include <iomanip>
+
+bool debug_mode = false; // Global flag for debugging
 
 // Function to calculate MD5 hash
 std::string calculate_md5(const char* data, size_t size) {
@@ -32,6 +35,15 @@ std::vector<std::string> generate_variants(const std::string& input_data) {
         std::string variant = input_data;
         variant[index] ^= (1 << bit_position);
         variants.push_back(variant);
+
+        // Debugging: Print the variant in hex format
+        if (debug_mode) {
+            std::cout << "Variant " << i << ": ";
+            for (char c : variant) {
+                std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)(unsigned char)c;
+            }
+            std::cout << "\n";
+        }
     }
     return variants;
 }
@@ -42,19 +54,26 @@ void process_variants(const std::vector<std::string>& variants, size_t start, si
         std::string hashed_value = calculate_md5(variants[i].c_str(), variants[i].size());
         if (hashed_value == target_hash) {
             std::cout << "Collision found! Original hash: " << target_hash << "\n";
+            std::cout << "Position of changed byte: " << i / 8 << "\n";
+            std::cout << "Hex value changed to: " << std::hex << static_cast<int>(variants[i][i % 8]) << "\n";
             std::exit(0);  // Exit the entire program when a collision is found
         }
     }
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <file_path> <target_hash>\n";
+    if (argc < 3 || (argc == 4 && std::string(argv[3]) != "-d")) {
+        std::cerr << "Usage: " << argv[0] << " <file_path> <target_hash> [-d]\n";
         return 1;
     }
 
     const char* file_path = argv[1];
     const std::string target_hash = argv[2];
+    
+    // Set debug mode flag if "-d" is provided
+    if (argc == 4 && std::string(argv[3]) == "-d") {
+        debug_mode = true;
+    }
 
     std::ifstream file(file_path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
