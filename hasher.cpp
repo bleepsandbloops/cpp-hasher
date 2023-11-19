@@ -1,8 +1,10 @@
 #include <iostream>
-#include <fstream>
 #include <iomanip>
+#include <fstream>
 #include <cstring>
+#include <algorithm>
 #include <openssl/md5.h>
+#include <cctype> // Add this line for isprint
 
 bool debug_mode = false; // Global flag for debugging
 
@@ -10,6 +12,8 @@ bool debug_mode = false; // Global flag for debugging
 std::string calculate_md5(const char* data, size_t size) {
     MD5_CTX md5Context;
     MD5_Init(&md5Context);
+
+    // Calculate MD5 hash for the current variant
     MD5_Update(&md5Context, data, size);
 
     unsigned char result[MD5_DIGEST_LENGTH];
@@ -25,23 +29,22 @@ std::string calculate_md5(const char* data, size_t size) {
 }
 
 // Function to process variants and find collisions
-void process_variants(std::ifstream& file, const char* target_hash) {
-    constexpr size_t BUFFER_SIZE = 4096; // Adjust as needed
-    char buffer[BUFFER_SIZE];
+void process_variants(const char* file_path, const char* target_hash) {
+    std::ifstream file(file_path, std::ios::binary);
 
-    size_t bit_position = 0;
-
-    // Read the entire file into the buffer
-    file.read(buffer, BUFFER_SIZE);
-
-    // Ensure debug_mode is properly set when the -d flag is provided
-    if (debug_mode) {
-        std::cout << "Debugging enabled.\n";
+    if (!file.is_open()) {
+        std::cerr << "Error opening file: " << file_path << "\n";
+        std::exit(1);
     }
 
-    for (size_t i = 0; i < file.gcount(); ++i) {
+    size_t bit_position = 0;
+    char buffer[1]; // Process one byte at a time
+
+    while (file.read(buffer, 1)) {
         for (size_t j = 0; j < 8; ++j) {
-            char variant = buffer[i];
+            char variant = buffer[0];
+
+            // Flip the j-th bit
             variant ^= (1 << j);
 
             // Calculate MD5 hash for the current variant
@@ -49,62 +52,41 @@ void process_variants(std::ifstream& file, const char* target_hash) {
 
             // Check for collision
             if (hashed_value == target_hash) {
-                size_t changed_byte_position = bit_position / 8;
-                char original_value = buffer[i];
+                size_t changed_bit_position = bit_position % 8;
+                char original_value = buffer[0];
 
                 std::cout << "Collision found! Original hash: " << target_hash << "\n";
-                std::cout << "Position of changed byte: " << changed_byte_position << "\n";
-                std::cout << "Bit position changed to: " << bit_position % 8 << "\n";
+                std::cout << "Bit position within byte changed to: " << changed_bit_position << "\n";
                 std::cout << "Hex value changed to: " << std::hex << static_cast<int>(variant) << "\n";
                 std::cout << "Original value of changed byte: " << std::hex << static_cast<int>(original_value) << "\n";
-                std::exit(0);  // Exit the entire program when a collision is found
+                std::exit(0); // Exit the entire program when a collision is found
             }
 
             ++bit_position;
 
             if (debug_mode) {
-                std::cout << "Bit Position: " << bit_position << "\n";
-                std::cout << "Variant: " << std::hex << static_cast<int>(variant) << "\n";
+                size_t current_bit_position = bit_position % 8;
+
+                std::cout << "Bit Position within byte: " << current_bit_position << "\n";
+                std::cout << "Variant (ASCII): ";
+                if (std::isprint(variant)) {
+                    std::cout << variant;
+                } else {
+                    std::cout << "Non-printable";
+                }
+                std::cout << "\n";
+                std::cout << "Variant (Hex): " << std::hex << static_cast<int>(variant) << "\n";
                 std::cout << "Hash: " << hashed_value << "\n";
             }
         }
     }
 
-    // Process the remaining bits in the last partial buffer
-    size_t remaining_bits = file.gcount() * 8;
-    for (size_t i = 0; i < remaining_bits; ++i) {
-        char variant = buffer[i / 8];
-        variant ^= (1 << (i % 8));
-
-        // Calculate MD5 hash for the current variant
-        std::string hashed_value = calculate_md5(&variant, 1);
-
-        // Check for collision
-        if (hashed_value == target_hash) {
-            size_t changed_byte_position = bit_position / 8;
-            char original_value = buffer[i / 8];
-
-            std::cout << "Collision found! Original hash: " << target_hash << "\n";
-            std::cout << "Position of changed byte: " << changed_byte_position << "\n";
-            std::cout << "Bit position changed to: " << bit_position % 8 << "\n";
-            std::cout << "Hex value changed to: " << std::hex << static_cast<int>(variant) << "\n";
-            std::cout << "Original value of changed byte: " << std::hex << static_cast<int>(original_value) << "\n";
-            std::exit(0);  // Exit the entire program when a collision is found
-        }
-
-        ++bit_position;
-
-        if (debug_mode) {
-            std::cout << "Bit Position: " << bit_position << "\n";
-            std::cout << "Variant: " << std::hex << static_cast<int>(variant) << "\n";
-            //std::cout << "Hash: " << hashed_value << "\n";
-        }
-    }
+    file.close();
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 3 || (argc == 4 && std::string(argv[3]) != "-d")) {
-        std::cerr << "Usage: " << argv[0] << " <file_path> <target_hash> [-d]\n";
+    if (argc != 3 && !(argc == 4 && std::string(argv[3]) == "-d")) {
+        std::cerr << "Usage: " << argv[0] << " <file_path> <target_md5_hash> [-d]\n";
         return 1;
     }
 
@@ -116,14 +98,8 @@ int main(int argc, char* argv[]) {
         debug_mode = true;
     }
 
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Error opening file: " << file_path << "\n";
-        return 1;
-    }
-
     // Process variants and find collisions
-    process_variants(file, target_hash);
+    process_variants(file_path, target_hash);
 
     std::cout << "No collision found.\n";
     return 0;
