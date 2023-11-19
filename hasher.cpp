@@ -1,13 +1,12 @@
 #include <iostream>
 #include <fstream>
-#include <iomanip>  // Added for std::setw and std::setfill
+#include <iomanip>
 #include <cstring>
 #include <openssl/md5.h>
-#include <vector>
 
 bool debug_mode = false; // Global flag for debugging
 
-// Function to calculate MD5 hash
+// Function to calculate MD5 hash using OpenSSL's MD5 library
 std::string calculate_md5(const char* data, size_t size) {
     MD5_CTX md5Context;
     MD5_Init(&md5Context);
@@ -25,48 +24,80 @@ std::string calculate_md5(const char* data, size_t size) {
     return md5String;
 }
 
-// Function to generate variants by flipping one bit at a time
-std::vector<std::string> generate_variants(const char* input_data, size_t data_size) {
-    std::vector<std::string> variants;
-    variants.reserve(data_size * 8);
+// Function to process variants and find collisions
+void process_variants(std::ifstream& file, const char* target_hash) {
+    constexpr size_t BUFFER_SIZE = 4096; // Adjust as needed
+    char buffer[BUFFER_SIZE];
 
-    for (size_t i = 0; i < data_size * 8; ++i) {
-        size_t index = i / 8;
-        size_t bit_position = i % 8;
+    size_t bit_position = 0;
 
-        char variant = input_data[index];
-        variant ^= (1 << bit_position);
+    // Read the entire file into the buffer
+    file.read(buffer, BUFFER_SIZE);
 
-        // Append the modified byte to the variants
-        variants.push_back(std::string(input_data, data_size));
-        variants.back()[index] = variant;
+    // Ensure debug_mode is properly set when the -d flag is provided
+    if (debug_mode) {
+        std::cout << "Debugging enabled.\n";
+    }
 
-        // Debugging: Print the variant in hex format
-        if (debug_mode) {
-            std::cout << "Variant " << i << ": ";
-            for (size_t j = 0; j < data_size; ++j) {
-                std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)(unsigned char)variants.back()[j];
+    for (size_t i = 0; i < file.gcount(); ++i) {
+        for (size_t j = 0; j < 8; ++j) {
+            char variant = buffer[i];
+            variant ^= (1 << j);
+
+            // Calculate MD5 hash for the current variant
+            std::string hashed_value = calculate_md5(&variant, 1);
+
+            // Check for collision
+            if (hashed_value == target_hash) {
+                size_t changed_byte_position = bit_position / 8;
+                char original_value = buffer[i];
+
+                std::cout << "Collision found! Original hash: " << target_hash << "\n";
+                std::cout << "Position of changed byte: " << changed_byte_position << "\n";
+                std::cout << "Bit position changed to: " << bit_position % 8 << "\n";
+                std::cout << "Hex value changed to: " << std::hex << static_cast<int>(variant) << "\n";
+                std::cout << "Original value of changed byte: " << std::hex << static_cast<int>(original_value) << "\n";
+                std::exit(0);  // Exit the entire program when a collision is found
             }
-            std::cout << "\n";
+
+            ++bit_position;
+
+            if (debug_mode) {
+                std::cout << "Bit Position: " << bit_position << "\n";
+                std::cout << "Variant: " << std::hex << static_cast<int>(variant) << "\n";
+                std::cout << "Hash: " << hashed_value << "\n";
+            }
         }
     }
 
-    return variants;
-}
+    // Process the remaining bits in the last partial buffer
+    size_t remaining_bits = file.gcount() * 8;
+    for (size_t i = 0; i < remaining_bits; ++i) {
+        char variant = buffer[i / 8];
+        variant ^= (1 << (i % 8));
 
-// Function to process variants and find collisions
-void process_variants(const std::vector<std::string>& variants, const char* target_hash, size_t data_size) {
-    for (size_t i = 0; i < variants.size(); ++i) {
-        std::string hashed_value = calculate_md5(variants[i].c_str(), data_size);
+        // Calculate MD5 hash for the current variant
+        std::string hashed_value = calculate_md5(&variant, 1);
+
+        // Check for collision
         if (hashed_value == target_hash) {
-            size_t changed_byte_position = i / 8;
-            char original_value = variants[i][changed_byte_position];
+            size_t changed_byte_position = bit_position / 8;
+            char original_value = buffer[i / 8];
 
             std::cout << "Collision found! Original hash: " << target_hash << "\n";
             std::cout << "Position of changed byte: " << changed_byte_position << "\n";
-            std::cout << "Hex value changed to: " << std::hex << static_cast<int>(variants[i][changed_byte_position]) << "\n";
+            std::cout << "Bit position changed to: " << bit_position % 8 << "\n";
+            std::cout << "Hex value changed to: " << std::hex << static_cast<int>(variant) << "\n";
             std::cout << "Original value of changed byte: " << std::hex << static_cast<int>(original_value) << "\n";
             std::exit(0);  // Exit the entire program when a collision is found
+        }
+
+        ++bit_position;
+
+        if (debug_mode) {
+            std::cout << "Bit Position: " << bit_position << "\n";
+            std::cout << "Variant: " << std::hex << static_cast<int>(variant) << "\n";
+            //std::cout << "Hash: " << hashed_value << "\n";
         }
     }
 }
@@ -91,14 +122,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Read the entire file into memory
-    std::vector<char> file_data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-
-    // Generate variants
-    auto variants = generate_variants(file_data.data(), file_data.size());
-
     // Process variants and find collisions
-    process_variants(variants, target_hash, file_data.size());
+    process_variants(file, target_hash);
 
     std::cout << "No collision found.\n";
     return 0;
