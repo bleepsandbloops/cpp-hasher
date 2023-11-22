@@ -47,10 +47,8 @@ public:
     ThreadPool(size_t num_threads) : stop(false) {
         // Create worker threads
 	for (size_t i = 0; i < num_threads; ++i) {
-            workers.emplace_back([this]() { worker_thread(); });
-        }
-	// Create a buffer worker thread
-	//buffer_worker = std::thread([this]() { buffer_worker_thread(); });
+            workers.emplace_back([this]() { worker_thread(); }); 
+	}
     }
     
     // Destructor
@@ -68,38 +66,8 @@ public:
         for (std::thread &worker : workers) {
             worker.join();
         }
-
-        // Redundant with join: Destructor waits until all tasks are processed
-	//std::unique_lock<std::mutex> lock(queue_mutex);
-        //condition.wait(lock, [this]() { return tasks.empty(); });
-        //while (!tasks.empty()) {
-        //std::this_thread::yield();
-        //}
-	//buffer_worker.join()
     }  
-
-    // Enqueue function to be called by parallel_process_variants function 
-    template <typename Func>
-    void enqueue(Func&& task, VariantBuffer& buffer) { // heap-allocation option
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex); // Acquire the lock
-	    //tasks.emplace(std::forward<Func>(task));  // headp-allocation version //compare tasks.push and tasks.emplace
-	    tasks.emplace([task, &buffer]() {task(buffer); });  // Pass the task and buffer via a lambda function 
-        }
-        // Notify one waiting worker_thread that a new task is available TODO notify_one or notify_all ?
-            condition.notify_one();
-    }
-
-
-private:
-    std::vector<std::thread> workers; // Vector of worker threads
-    //std::thread buffer_worker         // Buffer worker thread
-    std::mutex queue_mutex;           // Queue_mutex object for the lock
-    //std::mutex buffer_mutex;
-    std::queue<std::function<void()>> tasks; // Heap-allocated queue of callable objects (type-erasing wrapper)
-    std::condition_variable condition; // Condition variable used to wake up worker threadswith mutex to synchronize threads
-    bool stop;                         // Flag to signal threads to stop processing tasks
-
+    
     // Structure to hold the buffers
     struct VariantBuffer {
         char data[buffer_size];
@@ -107,12 +75,33 @@ private:
    
     // Vector of buffers
     std::vector<VariantBuffer> buffer_pool;
+
+    // Enqueue function to be called by parallel_process_variants function 
+    template <typename Func>
+    void enqueue(Func&& task) { // heap-allocation option
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex); // Acquire the lock
+	    tasks.emplace(std::forward<Func>(task));  // headp-allocation version //compare tasks.push and tasks.emplace
+        }
+        // Notify one waiting worker_thread that a new task is available TODO notify_one or notify_all ?
+            condition.notify_one();
+    }
+	    //tasks.emplace([task, &buffer]() {task(buffer); });  // Pass the task and buffer via a lambda function 
+
+
+private:
+    std::vector<std::thread> workers; // Vector of worker threads
+    std::mutex queue_mutex;           // Queue_mutex object for the lock
+    std::queue<std::function<void()>> tasks; // Heap-allocated queue of callable objects (type-erasing wrapper)
+    std::condition_variable condition; // Condition variable used to wake up worker threadswith mutex to synchronize threads
+    bool stop;                         // Flag to signal threads to stop processing tasks
     
     // Define a worker thread who runs as an infinite loop, picking tasks from the queue, until stop is signalled
     void worker_thread() {
         while (true) {
 	    // Initialize an empty task object for this thread, passing it this worker's buffer
-	    std::function<void(VariantBuffer&)> task;
+	    
+	    std::function<void()> task;
 
             {
 		// Block current thread until condition is notified (thread becomes available or class destructor is called). 
@@ -132,37 +121,12 @@ private:
 
 	    // Start the task in this thread
             task();
+	        // Task is 
+                // thread_pool.enqueue([file_size, i, j, target_hash, total_variants]() {
+                // process_variant(file_size, i, j, target_hash, total_variants);
+                // });
         }
     }
-    //void buffer_worker_thread(size_t threadID) {
-//	while (true) {
-	    // Get a buffer from the pool
-//            VariantBuffer* buffer = nullptr;
-  //          {
-                // Wait until a buffer is available
-    //            std::unique_lock<std::mutex> lock(buffer_mutex);
-    //            bufferAvailable.wait(lock, [&] { return !bufferPool.empty(); });
-
-      //          buffer = &bufferPool.back();
-        //        bufferPool.pop_back();
-        //}
-
-        // Exit if the pool is empty
-        //if (!buffer) {
-        //    break;
-        //}
-        // Simulate work by processing the variant
-        //process_variant(*buffer, threadId % kBufferSize, threadId / kBufferSize);
-
-        // Return the buffer to the pool
-        //{
-        //    std::lock_guard<std::mutex> lock(bufferMutex);
-        //    bufferPool.push_back(*buffer);
-        //}
-        // Notify waiting threads that a buffer is available
-        //bufferAvailable.notify_one();
-	//}
-    //}
 };
 
 
@@ -211,11 +175,6 @@ void save_buffer(const char *buffer, size_t file_size){
     }
 }
 
-// Wrapper for process_variant to allow function pointer 
-//void process_variant_wrapper(const char *buffer, size_t file_size, size_t i, size_t j, const char *target_hash, size_t total_variants) {
-//    process_variant(buffer, file_size, i, j, target_hash, total_variants);
-//}
-
 // Function to process one variant and return collisions 
 //void process_variant(const char *buffer, size_t file_size, size_t byte_position, size_t changed_bit_position, const char *target_hash, size_t total_variants) {
 void process_variant(VariantBuffer& buffer, size_t byte_position, size_t changed_bit_position, const char *target_hash, size_t total_variants) {
@@ -249,11 +208,10 @@ void process_variant(VariantBuffer& buffer, size_t byte_position, size_t changed
 
     // Return the buffer to the pool
     buffer.data[byte_position] ^= (1 << (7 - changed_bit_position));
-    {
-        std::lock_guard<std::mutex> lock(bufferMutex);
-        bufferPool.push_back(*buffer);
-    }    
-    
+    //{
+    //    std::lock_guard<std::mutex> lock(bufferMutex);
+    //    bufferPool.push_back(*buffer);
+    //}    
     //delete[] variant_buffer;
 
     // If collision is found, exit the entire program
@@ -274,7 +232,7 @@ void process_variant(VariantBuffer& buffer, size_t byte_position, size_t changed
     } 
     
     // Delete the variant buffer
-    delete[] variant_buffer;
+    //delete[] variant_buffer;
 }
 
 // Function to create the Thread Pool and start the jobs
@@ -291,17 +249,15 @@ void parallel_process_variants(const char *file_path, const char *target_hash, s
     size_t file_size = static_cast<size_t>(input_file.seekg(0, std::ios::end).tellg());
     input_file.seekg(0, std::ios::beg);
     if (!file_size == buffer_size) {
-        std:cerr << "Wrong buffer size for fiel size " << file_size << ". Exiting...\n";
+        std:cerr << "Wrong buffer size for file size " << file_size << ". Exiting...\n";
     }
 
     // Read the file stream into the buffer
     //char *buffer = new char[file_size];
     //input_file.read(buffer, file_size);
 
-    // Initialize the ThreadPool
+    // Initialize the ThreadPool and buffer pool
     ThreadPool thread_pool(num_threads);
-    
-    // Initialize the BufferPool
     thread_pool.buffer_pool.resize(num_threads);
     input_file.read(buffer_pool[0], buffer_size);
     for (size_t i = 1; i < num_threads; i++) {
@@ -321,8 +277,8 @@ void parallel_process_variants(const char *file_path, const char *target_hash, s
 	    //	    process_variant(buffer, file_size, i, j, target_hash, total_variants);
 	    //};
 	    // thread_pool.enqueue(static_cast<void (*)()>(task))
-	    thread_pool.enqueue([buffer, file_size, i, j, target_hash, total_variants]() {
-                process_variant(buffer, file_size, i, j, target_hash, total_variants);
+	    thread_pool.enqueue([&buffer, file_size, i, j, target_hash, total_variants]() {
+                process_variant(std::ref(buffer), file_size, i, j, target_hash, total_variants);
             });
         }
     }
