@@ -15,9 +15,18 @@
 
 // Global variables
 bool debug_mode = false; // Holds the optional mode for printing debug statements
+//std::mutex buffer_mutex;
 std::mutex printing_mutex; // Mutex to synchronize access to the standard output stream
 std::mutex outfile_mutex; // Mutex to ensure exclusive access to the outfile
 std::string collision_outfile; // Holds the filename to save the corrected file, if found 
+
+// Declare a buffer
+//constexpr int max_num_thread = 32;
+//constexpr int max_buf_size = 4096*512; // Generously give a 2 MB buffer for 1.5MB files 
+//char thread_buffer[max_num_thread][max_buf_size]; // Allocate a static array for all variant buffers
+
+//Declare the buffer size
+const int buffer_size = 3072*512
 
 // Function declarations
 class ThreadPool;
@@ -28,76 +37,137 @@ void process_variant(const char *buffer, size_t file_size, size_t byte_position,
 void parallel_process_variants(const char *file_path, const char *target_hash, size_t num_threads);
 void print_progress(size_t current, size_t total);
 
+//std::condition_variable bufferAvailable;
 
 // Class to define the ThreadPool 
 class ThreadPool {
 public:
+
+    // Constructor
     ThreadPool(size_t num_threads) : stop(false) {
-        for (size_t i = 0; i < num_threads; ++i) {
+        // Create worker threads
+	for (size_t i = 0; i < num_threads; ++i) {
             workers.emplace_back([this]() { worker_thread(); });
         }
+	// Create a buffer worker thread
+	//buffer_worker = std::thread([this]() { buffer_worker_thread(); });
     }
-
+    
+    // Destructor
     ~ThreadPool() {
         {
+	    // Lock the queue_mutex 
             std::unique_lock<std::mutex> lock(queue_mutex);
-            stop = true;
+            // Set stop to true to signal worker threads to stop
+	    stop = true;
         }
-        
+        // Notify all threads waiting on the condition variable
 	condition.notify_all();
 
+	// Wait for all worker threads to finish, guarantee thread cleanup
         for (std::thread &worker : workers) {
             worker.join();
         }
 
-        // Wait until all tasks are finished
-        while (!tasks.empty()) {
-        std::this_thread::yield();
-        }
+        // Redundant with join: Destructor waits until all tasks are processed
+	//std::unique_lock<std::mutex> lock(queue_mutex);
+        //condition.wait(lock, [this]() { return tasks.empty(); });
+        //while (!tasks.empty()) {
+        //std::this_thread::yield();
+        //}
+	//buffer_worker.join()
     }  
 
-    // Updated enqueue function to accept generic callable objects
+    // Enqueue function to be called by parallel_process_variants function 
     template <typename Func>
-    void enqueue(Func&& task) {
+    void enqueue(Func&& task, VariantBuffer& buffer) { // heap-allocation option
         {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            tasks.emplace(std::forward<Func>(task));  //compare tasks.puhs and tasks.emplace
+            std::unique_lock<std::mutex> lock(queue_mutex); // Acquire the lock
+	    //tasks.emplace(std::forward<Func>(task));  // headp-allocation version //compare tasks.push and tasks.emplace
+	    tasks.emplace([task, &buffer]() {task(buffer); });  // Pass the task and buffer via a lambda function 
         }
-
-        condition.notify_one();
+        // Notify one waiting worker_thread that a new task is available TODO notify_one or notify_all ?
+            condition.notify_one();
     }
 
+
 private:
-    std::vector<std::thread> workers;
-    std::queue<std::function<void()>> tasks;
-    std::mutex queue_mutex;
-    std::condition_variable condition;
-    bool stop;
+    std::vector<std::thread> workers; // Vector of worker threads
+    //std::thread buffer_worker         // Buffer worker thread
+    std::mutex queue_mutex;           // Queue_mutex object for the lock
+    //std::mutex buffer_mutex;
+    std::queue<std::function<void()>> tasks; // Heap-allocated queue of callable objects (type-erasing wrapper)
+    std::condition_variable condition; // Condition variable used to wake up worker threadswith mutex to synchronize threads
+    bool stop;                         // Flag to signal threads to stop processing tasks
+
+    // Structure to hold the buffers
+    struct VariantBuffer {
+        char data[buffer_size];
+    };
+   
+    // Vector of buffers
+    std::vector<VariantBuffer> buffer_pool;
     
+    // Define a worker thread who runs as an infinite loop, picking tasks from the queue, until stop is signalled
     void worker_thread() {
         while (true) {
-            std::function<void()> task;
+	    // Initialize an empty task object for this thread, passing it this worker's buffer
+	    std::function<void(VariantBuffer&)> task;
 
             {
+		// Block current thread until condition is notified (thread becomes available or class destructor is called). 
+		// Then, reacquire the lock and reawaken the thread if stop is signalled or task list is empty
                 std::unique_lock<std::mutex> lock(queue_mutex);
                 condition.wait(lock, [this]() { return stop || !tasks.empty(); });
 
+		// Exit if there are no more threads
                 if (stop && tasks.empty()) {
                     return;
                 }
 
+		// Move the object from the front of the queue to task and pop the queue
                 task = std::move(tasks.front());
                 tasks.pop();
             }
 
+	    // Start the task in this thread
             task();
         }
     }
+    //void buffer_worker_thread(size_t threadID) {
+//	while (true) {
+	    // Get a buffer from the pool
+//            VariantBuffer* buffer = nullptr;
+  //          {
+                // Wait until a buffer is available
+    //            std::unique_lock<std::mutex> lock(buffer_mutex);
+    //            bufferAvailable.wait(lock, [&] { return !bufferPool.empty(); });
+
+      //          buffer = &bufferPool.back();
+        //        bufferPool.pop_back();
+        //}
+
+        // Exit if the pool is empty
+        //if (!buffer) {
+        //    break;
+        //}
+        // Simulate work by processing the variant
+        //process_variant(*buffer, threadId % kBufferSize, threadId / kBufferSize);
+
+        // Return the buffer to the pool
+        //{
+        //    std::lock_guard<std::mutex> lock(bufferMutex);
+        //    bufferPool.push_back(*buffer);
+        //}
+        // Notify waiting threads that a buffer is available
+        //bufferAvailable.notify_one();
+	//}
+    //}
 };
 
 
 // Function to calculate MD5 hash for the char array
-std::string calculate_md5(const char *data, size_t size) {
+std::string calculate_md5(VariantBuffer& buffer, size_t size) {
     MD5_CTX md5Context;
     MD5_Init(&md5Context);
     MD5_Update(&md5Context, data, size);
@@ -116,53 +186,24 @@ std::string calculate_md5(const char *data, size_t size) {
 }
 
 // Function to print debugging statements
-void print_debug_info(const char *data, size_t size, size_t byte_position, size_t changed_bit_position, char variant) {
+void print_debug_info(size_t byte_position, size_t changed_bit_position, char variant) {
     if (debug_mode) {
-        std::string hashed_value = calculate_md5(data, size);
-
-        std::cout << "Original data at byte " << std::setw(5) << byte_position << ": ";
-        for (size_t i = 0; i < size; ++i) {
-            std::cout << data[i];
-        }
-        std::cout << "\n";
-
-        std::cout << "Hash: " << hashed_value << "\n";
-
         std::cout << "Debug Info: "
                   << "Byte position within file changed to: " << byte_position << "\n"
                   << "Bit position within byte changed to: " << changed_bit_position << "\n"
                   << "Hex value changed to: " << std::hex << static_cast<int>(variant) << "\n";
-
-        // Print the full file with the modified bit highlighted
-        for (size_t k = 0; k < size; ++k) {
-            char original_byte = data[k];
-
-            std::cout << "Byte " << std::setw(5) << k << ": " << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(original_byte) << " (";
-
-            for (size_t l = 0; l < 8; ++l) {
-                if (l == changed_bit_position) {
-                    std::cout << "[" << ((original_byte >> (7 - l)) & 1) << "]";
-                } else {
-                    std::cout << ((original_byte >> (7 - l)) & 1);
-                }
-            }
-
-            std::cout << ") ";
-        }
-
-        std::cout << "\n";
     }
 }
 
 //Function to save the corrected variant buffer to file
-void save_buffer(const char *variant_buffer, size_t file_size){
+void save_buffer(const char *buffer, size_t file_size){
     
     // Open an output file stream in binary mode
     std::ofstream outputFile(collision_outfile, std::ios::binary);
 	
     // Write the contents of the buffer to the file
     if (outputFile.is_open()) {
-        outputFile.write(variant_buffer, file_size);
+        outputFile.write(buffer, file_size);
         outputFile.close();
         std::cout << "Variant saved to file: " << collision_outfile << std::endl;
     } else {
@@ -170,34 +211,54 @@ void save_buffer(const char *variant_buffer, size_t file_size){
     }
 }
 
+// Wrapper for process_variant to allow function pointer 
+//void process_variant_wrapper(const char *buffer, size_t file_size, size_t i, size_t j, const char *target_hash, size_t total_variants) {
+//    process_variant(buffer, file_size, i, j, target_hash, total_variants);
+//}
+
 // Function to process one variant and return collisions 
-void process_variant(const char *buffer, size_t file_size, size_t byte_position, size_t changed_bit_position, const char *target_hash, size_t total_variants) {
+//void process_variant(const char *buffer, size_t file_size, size_t byte_position, size_t changed_bit_position, const char *target_hash, size_t total_variants) {
+void process_variant(VariantBuffer& buffer, size_t byte_position, size_t changed_bit_position, const char *target_hash, size_t total_variants) {
     
     // Create a temporary buffer for the variant
-    char *variant_buffer = new char[file_size];
+    //char *variant_buffer = new char[file_size];
     
     // Copy the original data to the variant buffer
-    memcpy(variant_buffer, buffer, file_size);
+    //memcpy(variant_buffer, buffer, file_size);
 
     // Flip the specified bit in the variant buffer
-    variant_buffer[byte_position] ^= (1 << (7 - changed_bit_position));
+    buffer.data[byte_position] ^= (1 << (7 - changed_bit_position));
 
     // Calculate the MD5 hash for the variant
-    std::string hashed_value = calculate_md5(variant_buffer, file_size);
+    std::string hashed_value = calculate_md5(buffer, file_size);
     
     // Check for a collision
     if (hashed_value == target_hash) {
-        {
-            std::unique_lock<std::mutex> lock(printing_mutex);
-            std::cout << "\nCollision found!\n";
-            std::cout << "Hash: " << hashed_value << "\n";
-            print_debug_info(buffer, file_size, byte_position, changed_bit_position, variant_buffer[byte_position]);
-        }
 
-        // If collision is found, save the modified variant buffer and exit the entire program
-        save_buffer(variant_buffer, file_size);
-	delete[] variant_buffer;
+        // If collision is found, save the modified buffer
+        save_buffer(buffer, file_size);
+        
+	if (debug_mode) {
+            std::unique_lock<std::mutex> lock(printing_mutex);
+            std::cout << "\nCollision found!  << byte_position << ", " << changed_bit_position << ": " << hashed_value << "\n";
+            print_debug_info(byte_position, changed_bit_position, variant_buffer[byte_position]);
+        }
         std::exit(0);
+
+    }
+
+    // Return the buffer to the pool
+    buffer.data[byte_position] ^= (1 << (7 - changed_bit_position));
+    {
+        std::lock_guard<std::mutex> lock(bufferMutex);
+        bufferPool.push_back(*buffer);
+    }    
+    
+    //delete[] variant_buffer;
+
+    // If collision is found, exit the entire program
+    if (hashed_value == target_hash) {
+	    std::exit(0);
     }
     
     // If the loop completes without a collision, print a message
@@ -222,29 +283,45 @@ void parallel_process_variants(const char *file_path, const char *target_hash, s
     // Open a binary mode input stream 
     std::ifstream input_file(file_path, std::ios::binary);
     if (!input_file.is_open()) {
-        std::cerr << "Error opening file: " << file_path << "\n";
+        std::cerr << "Error opening file: " << file_path << ". Exiting...\n";
         std::exit(1);
     }
 
     // Determine the file size using seek and tell of the file stream
     size_t file_size = static_cast<size_t>(input_file.seekg(0, std::ios::end).tellg());
     input_file.seekg(0, std::ios::beg);
+    if (!file_size == buffer_size) {
+        std:cerr << "Wrong buffer size for fiel size " << file_size << ". Exiting...\n";
+    }
 
     // Read the file stream into the buffer
-    char *buffer = new char[file_size];
-    input_file.read(buffer, file_size);
-
-    // Calculate number of variants, equalling number of bits
-    size_t total_variants = file_size * 8;
+    //char *buffer = new char[file_size];
+    //input_file.read(buffer, file_size);
 
     // Initialize the ThreadPool
     ThreadPool thread_pool(num_threads);
+    
+    // Initialize the BufferPool
+    thread_pool.buffer_pool.resize(num_threads);
+    input_file.read(buffer_pool[0], buffer_size);
+    for (size_t i = 1; i < num_threads; i++) {
+	memcpy(buffer_pool[i], buffer_pool[0], buffer_size);
+    }
+    
+    // Calculate number of variants, equalling number of bits
+    size_t total_variants = buffer_size * 8;
 
     // Enqueue a task for each variant using the functor
     for (size_t i = 0; i < file_size; ++i) {
         for (size_t j = 0; j < 8; ++j) {
-            // Update the functor's parameters for each variant
-            thread_pool.enqueue([buffer, file_size, i, j, target_hash, total_variants]() {
+	    // Enqueue the task
+            //thread_pool.enqueue(&process_variant_wrapper, buffer, file_size, i, j, target_hash, total_variants);
+            // Create lambda function for each task and cast to a pointer
+            //auto task = [buffer, file_size, i, j, target_hash, total_variants]() {
+	    //	    process_variant(buffer, file_size, i, j, target_hash, total_variants);
+	    //};
+	    // thread_pool.enqueue(static_cast<void (*)()>(task))
+	    thread_pool.enqueue([buffer, file_size, i, j, target_hash, total_variants]() {
                 process_variant(buffer, file_size, i, j, target_hash, total_variants);
             });
         }
